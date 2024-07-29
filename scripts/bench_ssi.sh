@@ -5,10 +5,10 @@ usage() {
   echo "Options:"
 }
 
-N_THREAD=16
+N_THREAD=8
 N_READ=0.5
 SKEWNESS=0.5
-RUN_TIME=5
+RUN_TIME=1
 
 while getopts ":t:s:r:T:a" opt; do
   case $opt in
@@ -52,23 +52,13 @@ COMMON_OPTIONS="-node=c -local=true -addr=127.0.0.1:5001"
 
 cd ./oltp_clients || exit
 
-echo "./bin/fc-server $COMMON_OPTIONS \
-       -c=$N_THREAD \
-       -runtime=$RUN_TIME \
-       -warmup=5 \
-       -lock=learned \
-       -rw=$N_READ \
-       -iso=none \
-       -skew=$SKEWNESS"
-
-# for learned.
 ./bin/fc-server $COMMON_OPTIONS \
   -c=$N_THREAD \
   -runtime=$RUN_TIME \
-  -warmup=5 \
-  -lock=learned \
+  -warmup=2 \
+  -lock=none \
   -rw=$N_READ \
-  -iso=none \
+  -iso=s \
   -skew=$SKEWNESS
 
 if [ -n "$LAUNCH" ]; then

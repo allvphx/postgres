@@ -10,11 +10,11 @@ usage() {
   echo "Options:"
 }
 
-N_THREAD=8
+N_THREAD=16
 N_WRITE=5
 N_READ=5
 SKEWNESS=0.5
-RUN_TIME=10
+RUN_TIME=5
 TABLES=1
 TABLE_SIZE=10000
 
@@ -64,12 +64,9 @@ if [ -n "$LAUNCH" ]; then
 fi
 
 # For becnhmarking of SSI.
-#psql -d sysbench -c 'set default_transaction_isolation="serializable"';
-#psql -d sysbench -c 'set default_cc_strategy="ssi"';
-
-psql -d sysbench -c 'set default_transaction_isolation="read uncommitted"';
-psql -d sysbench -c 'set default_cc_strategy="learned"';
-psql -d sysbench -c 'drop table sbtest1';
+psql -d sysbench -c 'set default_transaction_isolation="serializable"';
+psql -d sysbench -c 'set default_cc_strategy="ssi"';
+psql -d sysbench -c 'select pg_reload_conf()';
 
 
 COMMON_OPTIONS="/usr/local/share/sysbench/oltp_read_write.lua
@@ -79,24 +76,25 @@ COMMON_OPTIONS="/usr/local/share/sysbench/oltp_read_write.lua
   --pgsql-user=$USER
   --pgsql-db=$DB_NAME
   --tables=$TABLES
-  --table-size=$TABLE_SIZE
-  --range_selects=off
-  --non_index_updates=$N_WRITE
-  --index_updates=0
-  --delete_inserts=0
-  --point_selects=$N_READ
-  --rand-type=zipfian
-  --rand-zipfian-exp=$SKEWNESS"
+  --table-size=$TABLE_SIZE"
 
 sysbench $COMMON_OPTIONS prepare
 sysbench $COMMON_OPTIONS prewarm
 
 sysbench $COMMON_OPTIONS \
   --threads=$N_THREAD \
-  --warmup-time=5 \
   --time=$RUN_TIME \
-  --validate=on \
+  --validate=false \
+  --range_selects=off \
+  --non_index_updates=$N_WRITE \
+  --index_updates=0 \
+  --delete_inserts=0 \
+  --point_selects=$N_READ \
+  --rand-type=zipfian \
+  --rand-zipfian-exp=$SKEWNESS \
   run
+
+#  --warmup-time=2 \
 
 if [ -n "$LAUNCH" ]; then
   pg_ctl stop -D $PGDATA -m fast
