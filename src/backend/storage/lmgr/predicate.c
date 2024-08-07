@@ -517,7 +517,7 @@ static inline bool
 SerializationNeededForRead(Relation relation, Snapshot snapshot)
 {
 	/* Nothing to do if this is not a serializable transaction */
-	if (MySerializableXact == InvalidSerializableXact)
+	if (MySerializableXact == InvalidSerializableXact || !IsolationIsSSI())
 		return false;
 
 	/*
@@ -561,7 +561,7 @@ static inline bool
 SerializationNeededForWrite(Relation relation)
 {
 	/* Nothing to do if this is not a serializable transaction */
-	if (MySerializableXact == InvalidSerializableXact)
+	if (MySerializableXact == InvalidSerializableXact || !IsolationIsSSI())
 		return false;
 
 	/* Check if the relation doesn't participate in predicate locking */
@@ -1945,6 +1945,7 @@ CreateLocalPredicateLockHash(void)
 	HASHCTL		hash_ctl;
 
 	/* Initialize the backend-local hash table of parent locks */
+    Assert(IsolationIsSSI());
 	Assert(LocalPredicateLockHash == NULL);
 	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(PREDICATELOCKTARGETTAG);
@@ -3426,7 +3427,7 @@ ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe)
 		}
 	}
 
-	if (MySerializableXact == InvalidSerializableXact)
+	if (MySerializableXact == InvalidSerializableXact || !IsolationIsSSI())
 	{
 		Assert(LocalPredicateLockHash == NULL);
 		return;
@@ -4344,6 +4345,13 @@ CheckForSerializableConflictOut(bool visible, Relation relation,
 		return;
 	}
 
+//    if (IsolationNeedLock())
+//    {
+//        /* we do not maintain the conflict graph for 2PL */
+//        LWLockRelease(SerializableXactHashLock);
+//        return;
+//    }
+
 	if (RWConflictExists(MySerializableXact, sxact))
 	{
 		/* We don't want duplicate conflict records in the list. */
@@ -4440,6 +4448,7 @@ CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag)
 				 && !RWConflictExists(sxact, MySerializableXact))
 		{
 			LWLockRelease(SerializableXactHashLock);
+//            CHECK_ISOLATION_LOCK_AND_RETURN
 			LWLockAcquire(SerializableXactHashLock, LW_EXCLUSIVE);
 
 			/*
@@ -4725,8 +4734,15 @@ static void
 FlagRWConflict(SERIALIZABLEXACT *reader, SERIALIZABLEXACT *writer)
 {
 	Assert(reader != writer);
+    // In case of 2PL, a rw conflict is not accepted at all.
+    if (IsolationNeedLock())
+        ereport(ERROR,
+                (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+                        errmsg("could not serialize access due to 2PL violation"),
+                        errdetail_internal("Reason code: Canceled on conflict due to 2PL read write conflict."),
+                        errhint("The transaction might succeed if retried.")));
 
-	/* First, see if this conflict causes failure. */
+    /* First, see if this conflict causes failure. */
 	OnConflict_CheckForSerializationFailure(reader, writer);
 
 	/* Actually do the conflict flagging. */
@@ -4763,6 +4779,7 @@ OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
 	bool		failure;
 	RWConflict	conflict;
 
+    Assert(!IsolationNeedLock());   // disable the SSI during 2PL.
 	Assert(LWLockHeldByMe(SerializableXactHashLock));
 
 	failure = false;
@@ -4936,7 +4953,7 @@ PreCommit_CheckForSerializationFailure(void)
 {
 	RWConflict	nearConflict;
 
-	if (MySerializableXact == InvalidSerializableXact)
+	if (MySerializableXact == InvalidSerializableXact || !IsolationIsSSI())
 		return;
 
 	Assert(IsolationIsSerializable());
@@ -4963,6 +4980,8 @@ PreCommit_CheckForSerializationFailure(void)
 		SHMQueueNext(&MySerializableXact->inConflicts,
 					 &MySerializableXact->inConflicts,
 					 offsetof(RWConflictData, inLink));
+    Assert(!IsolationNeedLock() || nearConflict == NULL);
+    // in case of 2PL, no dependency graph shall be maintained.
 	while (nearConflict)
 	{
 		if (!SxactIsCommitted(nearConflict->sxactOut)
@@ -5042,7 +5061,7 @@ AtPrepare_PredicateLocks(void)
 	xactRecord = &(record.data.xactRecord);
 	lockRecord = &(record.data.lockRecord);
 
-	if (MySerializableXact == InvalidSerializableXact)
+	if (MySerializableXact == InvalidSerializableXact || !IsolationIsSSI())
 		return;
 
 	/* Generate an xact record for our SERIALIZABLEXACT */
@@ -5108,7 +5127,7 @@ AtPrepare_PredicateLocks(void)
 void
 PostPrepare_PredicateLocks(TransactionId xid)
 {
-	if (MySerializableXact == InvalidSerializableXact)
+	if (MySerializableXact == InvalidSerializableXact || !IsolationIsSSI())
 		return;
 
 	Assert(SxactIsPrepared(MySerializableXact));

@@ -19,6 +19,10 @@
 
 #include <time.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <storage/predicate_internals.h>
+#include <utils/lsyscache.h>
+#include <assert.h>
 
 #include "access/commit_ts.h"
 #include "access/multixact.h"
@@ -57,6 +61,7 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/smgr.h"
+#include "storage/rl_policy.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/combocid.h"
@@ -75,6 +80,8 @@
  */
 int			DefaultXactIsoLevel = XACT_READ_COMMITTED;
 int			XactIsoLevel;
+int         DefaultXactLockStrategy = LOCK_LEARNED;
+int         XactLockStrategy;
 
 bool		DefaultXactReadOnly = false;
 bool		XactReadOnly;
@@ -119,6 +126,9 @@ TransactionId *ParallelCurrentXids;
  * recording flags.
  */
 int			MyXactFlags;
+
+const char* cc_host = "localhost";
+const int cc_port = 5109;
 
 /*
  *	transaction states - transaction state from server perspective
@@ -205,6 +215,7 @@ typedef TransactionStateData *TransactionState;
 typedef struct SerializedTransactionState
 {
 	int			xactIsoLevel;
+    int         xactLockType;
 	bool		xactDeferrable;
 	FullTransactionId topFullTransactionId;
 	FullTransactionId currentFullTransactionId;
@@ -322,6 +333,7 @@ static void CheckTransactionBlock(bool isTopLevel, bool throwError,
 static void CommitTransaction(void);
 static TransactionId RecordTransactionAbort(bool isSubXact);
 static void StartTransaction(void);
+void AdjustTransaction(void);
 
 static void StartSubTransaction(void);
 static void CommitSubTransaction(void);
@@ -342,6 +354,9 @@ static void ShowTransactionStateRec(const char *str, TransactionState state);
 static const char *BlockStateAsString(TBlockState blockState);
 static const char *TransStateAsString(TransState state);
 
+//static double predict_cc_reward(const double *x, int modelIndex);
+//static int get_optimal_strategy(const double *x);
+//static void scatterInput(double *x, const double mean[],const double scale[], int size);
 
 /* ----------------------------------------------------------------
  *	transaction state accessors
@@ -384,6 +399,17 @@ IsAbortedTransactionBlockState(void)
 		return true;
 
 	return false;
+}
+
+bool
+IsTransactionUseful(void)
+{
+    TransactionState s = CurrentTransactionState;
+//    printf("xact%d: current xact state =  (%d)\n ",
+//           GetCurrentTransactionId(), s->blockState);
+    if (s->blockState >= TBLOCK_ABORT && s->blockState <= TBLOCK_ABORT_PENDING)
+        return false;
+    return true;
 }
 
 
@@ -1876,9 +1902,148 @@ AtSubCleanup_Memory(void)
 }
 
 /* ----------------------------------------------------------------
+ *						learning related
+ * ----------------------------------------------------------------
+ */
+//
+//static int connect_to_model(const char* host, int port) {
+//    int ret, conn_fd;
+//    struct sockaddr_in server_addr = { 0 };
+//
+//    server_addr.sin_family = AF_INET;
+//    server_addr.sin_port = htons(port);
+//    inet_pton(AF_INET, host, &server_addr.sin_addr);
+//    conn_fd = socket(AF_INET, SOCK_STREAM, 0);
+//    if (conn_fd < 0) {
+//        return conn_fd;
+//    }
+//
+//    ret = connect(conn_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+//    if (ret == -1) {
+//        return ret;
+//    }
+//
+//    return conn_fd;
+//}
+
+//static void write_all_to_socket(int conn_fd, const char* json) {
+//    size_t json_length;
+//    ssize_t written, written_total;
+//    json_length = strlen(json);
+//    written_total = 0;
+//
+//    while (written_total != json_length) {
+//        written = write(conn_fd,
+//                        json + written_total,
+//                        json_length - written_total);
+//        written_total += written;
+//    }
+//}
+
+//#define IS_SYS_TABLE(rel) (starts_with(rel, "pg_") || starts_with(rel, "sql_"))
+//#define CC_WO_LOCK 0    // the default algorithm to use w/o any contention.
+//#define WRITE_LOCK_BIT LOCKBIT_ON(ExclusiveLock)
+//#define READ_LOCK_BIT LOCKBIT_ON(RowShareLock)
+//#define HAS_2PL_LOCK(c) (((c)->holdMask & READ_LOCK_BIT) | ((c)->holdMask & WRITE_LOCK_BIT))
+//#define ONLY_2PL_LOCK(c) (!((c)->holdMask & ~(WRITE_LOCK_BIT|READ_LOCK_BIT)))
+//Assert();
+
+
+//const char* feature_names[FEATURE_LENGTH] = {
+////        "f_process",
+//        "f_transactions",
+//        "f_tuple_lock",
+//        "f_relation_lock",
+//        "f_current",
+//};
+
+//#define GLOBAL_F_XACT 0
+//#define GLOBAL_F_TUPLE_LOCK 1
+//#define GLOBAL_F_REL_LOCK 2
+//#define GLOBAL_F_CUR 3
+//#define GLOBAL_F_PROC 0
+//#define GLOBAL_F_CACHE 5
+//#define GLOBAL_F_IO 6
+//#define GLOBAL_F_WAIT_EVENTS 8
+
+
+//const bool GenTrainingData = true;
+
+//static char * PredicateLockTagetToString(PredicateLockTargetType ltype)
+//{
+//    if (ltype == PREDLOCKTAG_RELATION)
+//        return "relation";
+//    else if (ltype == PREDLOCKTAG_PAGE)
+//        return "page";
+//    else if (ltype == PREDLOCKTAG_TUPLE)
+//        return "tuple";
+//    else return "unknown";
+//}
+
+// lock_timeout and deadlock_timeout.
+//static StringInfoData * ExtractSysFeatures(LocalTransactionId tid, bool *need_predict) {
+//    StringInfoData *features = (StringInfoData *) palloc(sizeof(StringInfoData) * FEATURE_LENGTH);
+////    LockData *lockInfo;
+////    PredicateLockData *predicateLockInfo;
+////    int total_concurrent_acts = 0;
+//
+//    for (int i = 0; i < FEATURE_LENGTH; i++)
+//        initStringInfo(&features[i]);
+//
+//    {
+////        GetCurLockFeatures(&features[GLOBAL_F_TUPLE_LOCK]);
+////        printf("xact%d: current features %s\n", tid, features[GLOBAL_F_TUPLE_LOCK].data);
+////    }
+//
+//    // Current operation information.
+////        appendStringInfo(&features[GLOBAL_F_CUR],
+//////                         "{\"cur_xact\":%d,"
+////                         "\"cur_sql\":%s},", sql);
+////    return features;
+//
+//    if (!need_predict)
+//    {
+//        printf("xact%d: no need for prediction!\n", tid);
+//        return features;
+//    }
+//    return features;
+//}
+
+/* ----------------------------------------------------------------
  *						interface routines
  * ----------------------------------------------------------------
  */
+
+/*
+ *	AdjustTransaction
+ */
+void
+AdjustTransaction()
+{
+    TransactionState s;
+//    MemoryContext oldCtx;
+    TBlockState tb;
+
+    s = &TopTransactionStateData;
+    CurrentTransactionState = s;
+    tb = s->blockState;
+
+    if (tb != TBLOCK_INPROGRESS && tb != TBLOCK_PARALLEL_INPROGRESS)
+        return;
+    CurTransactionContext = s->curTransactionContext;
+
+    Assert((!IsolationIsSerializable() && !IsolationNeedLock()) || IsolationLearnCC()
+           || XactLockStrategy == DefaultXactLockStrategy || IsolationIsSerializable());
+
+    if (XactLockStrategy == LOCK_ASSERT_ABORT)
+    {
+        ereport(ERROR,
+                (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+                        errmsg("could not serialize access due to cc strategy"),
+                        errdetail_internal("Reason code: Asserted abort by AdjustTransaction."),
+                        errhint("The transaction might succeed if retried.")));
+    }
+}
 
 /*
  *	StartTransaction
@@ -1953,8 +2118,7 @@ StartTransaction(void)
 		XactReadOnly = DefaultXactReadOnly;
 	}
 	XactDeferrable = DefaultXactDeferrable;
-	XactIsoLevel = DefaultXactIsoLevel;
-	forceSyncCommit = false;
+    forceSyncCommit = false;
 	MyXactFlags = 0;
 
 	/*
@@ -1984,9 +2148,9 @@ StartTransaction(void)
 	vxid.backendId = MyBackendId;
 	vxid.localTransactionId = GetNextLocalTransactionId();
 
-	/*
-	 * Lock the virtual transaction id before we announce it in the proc array
-	 */
+    /*
+     * Lock the virtual transaction id before we announce it in the proc array
+     */
 	VirtualXactLockTableInsert(vxid);
 
 	/*
@@ -1995,8 +2159,25 @@ StartTransaction(void)
 	 */
 	Assert(MyProc->backendId == vxid.backendId);
 	MyProc->lxid = vxid.localTransactionId;
+    if (!IsolationLearnCC())
+    {
+        XactIsoLevel = DefaultXactIsoLevel;
+        XactLockStrategy = DefaultXactLockStrategy;
+        if (!IsolationNeedLock())
+            XactIsoLevel = XACT_SERIALIZABLE;
+        if (IsolationIsSerializable())
+        {
+            // In case of SSI, disable locking based methods.
+            XactLockStrategy = LOCK_NONE;
+            Assert(XactLockStrategy == LOCK_NONE);
+        }
 
-	TRACE_POSTGRESQL_TRANSACTION_START(vxid.localTransactionId);
+        if (!(IsolationNeedLock() || IsolationIsSerializable()))
+            printf("xact%d is not serializable (iso:%d, lock:%d).\n", MyProc->lxid , XactIsoLevel, XactLockStrategy);
+    }
+    else init_rl_state(vxid.localTransactionId);
+
+    TRACE_POSTGRESQL_TRANSACTION_START(vxid.localTransactionId);
 
 	/*
 	 * set transaction_timestamp() (a/k/a now()).  Normally, we want this to
@@ -2048,6 +2229,7 @@ CommitTransaction(void)
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
 	bool		is_parallel_worker;
+    LocalTransactionId tid;
 
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
 
@@ -2170,11 +2352,13 @@ CommitTransaction(void)
 
 	TRACE_POSTGRESQL_TRANSACTION_COMMIT(MyProc->lxid);
 
-	/*
-	 * Let others know about no transaction in progress by me. Note that this
-	 * must be done _before_ releasing locks we hold and _after_
-	 * RecordTransactionCommit.
-	 */
+    tid = MyProc->lxid;
+
+    /*
+     * Let others know about no transaction in progress by me. Note that this
+     * must be done _before_ releasing locks we hold and _after_
+     * RecordTransactionCommit.
+     */
 	ProcArrayEndTransaction(MyProc, latestXid);
 
 	/*
@@ -2216,8 +2400,9 @@ CommitTransaction(void)
 	AtEOXact_Inval(true);
 
 	AtEOXact_MultiXact();
+    report_xact_result(true, tid);
 
-	ResourceOwnerRelease(TopTransactionResourceOwner,
+    ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_LOCKS,
 						 true, true);
 	ResourceOwnerRelease(TopTransactionResourceOwner,
@@ -2275,7 +2460,7 @@ CommitTransaction(void)
 	 */
 	s->state = TRANS_DEFAULT;
 
-	RESUME_INTERRUPTS();
+    RESUME_INTERRUPTS();
 }
 
 
@@ -2577,8 +2762,10 @@ AbortTransaction(void)
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
 	bool		is_parallel_worker;
+    LocalTransactionId tid = MyProc->lxid;
 
-	/* Prevent cancel/die interrupt while cleaning up */
+    /* Prevent cancel/die interrupt while cleaning up */
+	HOLD_INTERRUPTS();
 	HOLD_INTERRUPTS();
 
 	/* Make sure we have a valid memory context and resource owner */
@@ -2707,12 +2894,13 @@ AbortTransaction(void)
 	 * RecordTransactionAbort.
 	 */
 	ProcArrayEndTransaction(MyProc, latestXid);
+    report_xact_result(false, tid);
 
-	/*
-	 * Post-abort cleanup.  See notes in CommitTransaction() concerning
-	 * ordering.  We can skip all of it if the transaction failed before
-	 * creating a resource owner.
-	 */
+    /*
+     * Post-abort cleanup.  See notes in CommitTransaction() concerning
+     * ordering.  We can skip all of it if the transaction failed before
+     * creating a resource owner.
+     */
 	if (TopTransactionResourceOwner != NULL)
 	{
 		if (is_parallel_worker)
@@ -2749,9 +2937,10 @@ AbortTransaction(void)
 		pgstat_report_xact_timestamp(0);
 	}
 
-	/*
-	 * State remains TRANS_ABORT until CleanupTransaction().
-	 */
+
+    /*
+     * State remains TRANS_ABORT until CleanupTransaction().
+     */
 	RESUME_INTERRUPTS();
 }
 
@@ -2885,6 +3074,7 @@ StartTransactionCommand(void)
  * just skipping the reset in StartTransaction() won't work.)
  */
 static int	save_XactIsoLevel;
+static int	save_XactLockStrategy;
 static bool save_XactReadOnly;
 static bool save_XactDeferrable;
 
@@ -2893,6 +3083,7 @@ SaveTransactionCharacteristics(void)
 {
 	save_XactIsoLevel = XactIsoLevel;
 	save_XactReadOnly = XactReadOnly;
+    save_XactLockStrategy = XactLockStrategy;
 	save_XactDeferrable = XactDeferrable;
 }
 
@@ -2902,6 +3093,7 @@ RestoreTransactionCharacteristics(void)
 	XactIsoLevel = save_XactIsoLevel;
 	XactReadOnly = save_XactReadOnly;
 	XactDeferrable = save_XactDeferrable;
+    XactLockStrategy = save_XactLockStrategy;
 }
 
 
@@ -5230,7 +5422,7 @@ EstimateTransactionStateSpace(void)
  *		Write out relevant details of our transaction state that will be
  *		needed by a parallel worker.
  *
- * We need to save and restore XactDeferrable, XactIsoLevel, and the XIDs
+ * We need to save and restore XactDeferrable, XactIsoLevel, XactLockType, and the XIDs
  * associated with this transaction.  These are serialized into a
  * caller-supplied buffer big enough to hold the number of bytes reported by
  * EstimateTransactionStateSpace().  We emit the XIDs in sorted order for the
@@ -5248,6 +5440,7 @@ SerializeTransactionState(Size maxsize, char *start_address)
 	result = (SerializedTransactionState *) start_address;
 
 	result->xactIsoLevel = XactIsoLevel;
+    result->xactLockType = XactLockStrategy;
 	result->xactDeferrable = XactDeferrable;
 	result->topFullTransactionId = XactTopFullTransactionId;
 	result->currentFullTransactionId =
@@ -5317,6 +5510,7 @@ StartParallelWorkerTransaction(char *tstatespace)
 
 	tstate = (SerializedTransactionState *) tstatespace;
 	XactIsoLevel = tstate->xactIsoLevel;
+    XactLockStrategy = tstate->xactLockType;
 	XactDeferrable = tstate->xactDeferrable;
 	XactTopFullTransactionId = tstate->topFullTransactionId;
 	CurrentTransactionState->fullTransactionId =

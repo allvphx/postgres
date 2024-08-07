@@ -302,6 +302,14 @@ static const struct config_enum_entry isolation_level_options[] = {
 	{NULL, 0}
 };
 
+static const struct config_enum_entry cc_strategy_options[] = {
+        {"s2pl", LOCK_2PL, false},
+        {"s2plnw", LOCK_2PL_NW, false},
+        {"ssi", LOCK_NONE, false},
+        {"learned", LOCK_LEARNED, false},
+        {NULL, 0}
+};
+
 static const struct config_enum_entry session_replication_role_options[] = {
 	{"origin", SESSION_REPLICATION_ROLE_ORIGIN, false},
 	{"replica", SESSION_REPLICATION_ROLE_REPLICA, false},
@@ -2480,7 +2488,7 @@ static struct config_int ConfigureNamesInt[] =
 						 "objects will need to be locked at any one time.")
 		},
 		&max_locks_per_xact,
-		64, 10, INT_MAX,
+		128, 10, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -4283,6 +4291,27 @@ static struct config_enum ConfigureNamesEnum[] =
 		XACT_READ_COMMITTED, isolation_level_options,
 		check_XactIsoLevel, NULL, NULL
 	},
+
+    {
+            {"default_cc_strategy", PGC_USERSET, CLIENT_CONN_STATEMENT,
+                    gettext_noop("Sets the default cc strategy of each new transaction."),
+                    NULL
+            },
+            &DefaultXactLockStrategy,
+            LOCK_LEARNED, cc_strategy_options,
+            NULL, NULL, NULL
+    },
+
+    {
+            {"cc_strategy", PGC_USERSET, CLIENT_CONN_STATEMENT,
+                    gettext_noop("Sets the current transaction's cc strategy."),
+                    NULL,
+                    GUC_NO_RESET_ALL | GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
+            },
+            &XactLockStrategy,
+            LOCK_NONE, cc_strategy_options,
+            NULL, NULL, NULL
+    },
 
 	{
 		{"IntervalStyle", PGC_USERSET, CLIENT_CONN_LOCALE,
@@ -8201,9 +8230,12 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 				{
 					DefElem    *item = (DefElem *) lfirst(head);
 
-					if (strcmp(item->defname, "transaction_isolation") == 0)
-						SetPGVariable("default_transaction_isolation",
-									  list_make1(item->arg), stmt->is_local);
+                    if (strcmp(item->defname, "transaction_isolation") == 0)
+                        SetPGVariable("default_transaction_isolation",
+                                      list_make1(item->arg), stmt->is_local);
+                    else if (strcmp(item->defname, "cc_strategy") == 0)
+                        SetPGVariable("default_cc_strategy",
+                                      list_make1(item->arg), stmt->is_local);
 					else if (strcmp(item->defname, "transaction_read_only") == 0)
 						SetPGVariable("default_transaction_read_only",
 									  list_make1(item->arg), stmt->is_local);

@@ -32,6 +32,7 @@
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "access/xact.h"
 #include "catalog/pg_am.h"
 #include "executor/execdebug.h"
 #include "executor/nodeIndexscan.h"
@@ -68,6 +69,7 @@ static int	reorderqueue_cmp(const pairingheap_node *a,
 static void reorderqueue_push(IndexScanState *node, TupleTableSlot *slot,
 							  Datum *orderbyvals, bool *orderbynulls);
 static HeapTuple reorderqueue_pop(IndexScanState *node);
+//static bool lock_for_slot(Relation rel, Snapshot snap, TupleTableSlot *slot, CommandId cid, LOCKMODE lockmode);
 
 
 /* ----------------------------------------------------------------
@@ -518,10 +520,12 @@ reorderqueue_pop(IndexScanState *node)
  *		ExecIndexScan(node)
  * ----------------------------------------------------------------
  */
+// PHX: we assume all transactional select use index, which is true for TPC-C and Modified-YCSB.
 static TupleTableSlot *
 ExecIndexScan(PlanState *pstate)
 {
 	IndexScanState *node = castNode(IndexScanState, pstate);
+    TupleTableSlot *slot = NULL;
 
 	/*
 	 * If we have runtime keys and they've not already been set up, do it now.
@@ -530,13 +534,32 @@ ExecIndexScan(PlanState *pstate)
 		ExecReScan((PlanState *) node);
 
 	if (node->iss_NumOrderByKeys > 0)
-		return ExecScan(&node->ss,
+        slot = ExecScan(&node->ss,
 						(ExecScanAccessMtd) IndexNextWithReorder,
 						(ExecScanRecheckMtd) IndexRecheck);
 	else
-		return ExecScan(&node->ss,
+        slot = ExecScan(&node->ss,
 						(ExecScanAccessMtd) IndexNext,
 						(ExecScanRecheckMtd) IndexRecheck);
+//    LOCKMODE lockmode = LockTupleShare;
+//    if (XactCurrentOperation == XACT_READ)
+//        lockmode = LockTupleShare;
+//    else if (XactCurrentOperation == XACT_UPDATE || XactCurrentOperation == XACT_INSERT)
+//        lockmode = LockTupleExclusive;
+//    else
+//        elog(ERROR, "invalid xact operation");
+    return slot;
+//    // the iss_RelationDesc shall be loaded.
+//    ResultRelInfo *resultRelInfo = pstate->state->es_result_relation_info;
+//    Relation resultRelationDesc = resultRelInfo->ri_RelationDesc;
+//    // before releasing buffer ?
+//    if (!lock_for_slot(resultRelationDesc, pstate->state->es_snapshot,
+//                   slot, pstate->state->es_output_cid, lockmode)) {
+//        elog(ERROR, "the lock for IndexScan failed");
+//        return NULL;
+//    } else {
+//        return slot;
+//    }
 }
 
 /* ----------------------------------------------------------------

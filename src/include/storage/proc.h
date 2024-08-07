@@ -115,6 +115,8 @@ struct PGPROC
 								 * else InvalidLocalTransactionId */
 	int			pid;			/* Backend's process ID; 0 if prepared xact */
 	int			pgprocno;
+    double      rank;           /* Wait priority */
+    int         nDep;           /* dependency count */
 
 	/* These fields are zero while a backend is still starting up: */
 	BackendId	backendId;		/* This backend's backend ID (if assigned) */

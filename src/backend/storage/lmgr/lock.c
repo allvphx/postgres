@@ -31,6 +31,9 @@
 
 #include <signal.h>
 #include <unistd.h>
+#include <utils/lsyscache.h>
+#include <arpa/inet.h>
+#include <sys/mman.h>
 
 #include "access/transam.h"
 #include "access/twophase.h"
@@ -45,6 +48,7 @@
 #include "storage/sinvaladt.h"
 #include "storage/spin.h"
 #include "storage/standby.h"
+#include "storage/rl_policy.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/resowner_private.h"
@@ -450,6 +454,7 @@ InitLocks(void)
 									  16,
 									  &info,
 									  HASH_ELEM | HASH_BLOBS);
+    if (IsolationLearnCC()) init_policy_maker();
 }
 
 
@@ -999,6 +1004,14 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		 * blocking, remove useless table entries and return NOT_AVAIL without
 		 * waiting.
 		 */
+        if (IsolationLearnCC())
+        {
+            before_lock(lockmode == ExclusiveLock? false:true,
+                        lock->nRequested,
+                        lock->nGranted,
+                        MyProc->nDep);
+            if (MyProc->rank > 9.8) dontWait = true;
+        }
 		if (dontWait)
 		{
 			AbortStrongLockAcquire();
@@ -1472,7 +1485,7 @@ GrantLock(LOCK *lock, PROCLOCK *proclock, LOCKMODE lockmode)
 	if (lock->granted[lockmode] == lock->requested[lockmode])
 		lock->waitMask &= LOCKBIT_OFF(lockmode);
 	proclock->holdMask |= LOCKBIT_ON(lockmode);
-	LOCK_PRINT("GrantLock", lock, lockmode);
+    LOCK_PRINT("GrantLock", lock, lockmode);
 	Assert((lock->nGranted > 0) && (lock->granted[lockmode] > 0));
 	Assert(lock->nGranted <= lock->nRequested);
 }
@@ -1495,6 +1508,8 @@ UnGrantLock(LOCK *lock, LOCKMODE lockmode,
 	Assert((lock->nRequested > 0) && (lock->requested[lockmode] > 0));
 	Assert((lock->nGranted > 0) && (lock->granted[lockmode] > 0));
 	Assert(lock->nGranted <= lock->nRequested);
+
+
 
 	/*
 	 * fix the general lock stats
@@ -3535,6 +3550,7 @@ LockShmemSize(void)
 
 	return size;
 }
+
 
 /*
  * GetLockStatusData - Return a summary of the lock manager's internal

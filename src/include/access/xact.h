@@ -14,6 +14,7 @@
 #ifndef XACT_H
 #define XACT_H
 
+//#include "executor/execdesc.h"
 #include "access/transam.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
@@ -38,7 +39,20 @@
 #define XACT_REPEATABLE_READ	2
 #define XACT_SERIALIZABLE		3
 
+#define LOCK_NONE   0
+#define LOCK_2PL    1
+#define LOCK_2PL_NW    2
+#define LOCK_ASSERT_ABORT    3
+#define LOCK_LEARNED    4
+
+#define XACT_UPDATE 0
+#define XACT_READ   1
+#define XACT_INSERT   2
+#define XACT_INVALID   3
+
 extern int	DefaultXactIsoLevel;
+extern int	DefaultXactLockStrategy;
+extern int  XactLockStrategy;
 extern PGDLLIMPORT int XactIsoLevel;
 
 /*
@@ -47,9 +61,15 @@ extern PGDLLIMPORT int XactIsoLevel;
  * the others use one snapshot per statement.
  * Serializable uses predicate locks in addition to snapshots.
  * These macros should be used to check which isolation level is selected.
+ * In case of 2PL, we use single snapshot version.
  */
-#define IsolationUsesXactSnapshot() (XactIsoLevel >= XACT_REPEATABLE_READ)
 #define IsolationIsSerializable() (XactIsoLevel == XACT_SERIALIZABLE)
+#define IsolationIsSSI() (IsolationIsSerializable() && XactLockStrategy == LOCK_NONE)
+#define IsolationUsesXactSnapshot() (XactIsoLevel >= XACT_REPEATABLE_READ)
+#define IsolationNeedLock() (XactLockStrategy == LOCK_2PL || XactLockStrategy == LOCK_2PL_NW)
+#define IsolationLockNoWait() (XactLockStrategy == LOCK_2PL_NW)
+#define IsolationLearnCC() (DefaultXactLockStrategy == LOCK_LEARNED)
+#define CHECK_ISOLATION_LOCK_AND_RETURN if (IsolationNeedLock()) return;
 
 /* Xact read-only state */
 extern bool DefaultXactReadOnly;
@@ -365,8 +385,10 @@ typedef struct xl_xact_parsed_abort
  *		extern definitions
  * ----------------
  */
+extern void AdjustTransaction();
 extern bool IsTransactionState(void);
 extern bool IsAbortedTransactionBlockState(void);
+extern bool IsTransactionUseful(void);
 extern TransactionId GetTopTransactionId(void);
 extern TransactionId GetTopTransactionIdIfAny(void);
 extern TransactionId GetCurrentTransactionId(void);

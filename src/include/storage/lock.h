@@ -18,10 +18,12 @@
 #error "lock.h may not be included from frontend code"
 #endif
 
+#include <access/relation.h>
 #include "storage/lockdefs.h"
 #include "storage/backendid.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
+#include "lib/stringinfo.h"
 
 
 /* struct PGPROC is declared in proc.h, but must forward-reference it */
@@ -153,6 +155,7 @@ typedef enum LockTagType
 } LockTagType;
 
 #define LOCKTAG_LAST_TYPE	LOCKTAG_DATABASE_FROZEN_IDS
+
 
 extern const char *const LockTagTypeNames[];
 

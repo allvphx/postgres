@@ -25,6 +25,7 @@
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
+#include "storage/rl_policy.h"
 #include "utils/inval.h"
 
 
@@ -560,6 +561,7 @@ bool
 ConditionalLockTuple(Relation relation, ItemPointer tid, LOCKMODE lockmode)
 {
 	LOCKTAG		tag;
+    bool res;
 
 	SET_LOCKTAG_TUPLE(tag,
 					  relation->rd_lockInfo.lockRelId.dbId,
@@ -567,7 +569,8 @@ ConditionalLockTuple(Relation relation, ItemPointer tid, LOCKMODE lockmode)
 					  ItemPointerGetBlockNumber(tid),
 					  ItemPointerGetOffsetNumber(tid));
 
-	return (LockAcquire(&tag, lockmode, false, true) != LOCKACQUIRE_NOT_AVAIL);
+	res =  (LockAcquire(&tag, lockmode, false, true) != LOCKACQUIRE_NOT_AVAIL);
+    return res;
 }
 
 /*
@@ -584,7 +587,7 @@ UnlockTuple(Relation relation, ItemPointer tid, LOCKMODE lockmode)
 					  ItemPointerGetBlockNumber(tid),
 					  ItemPointerGetOffsetNumber(tid));
 
-	LockRelease(&tag, lockmode, false);
+    LockRelease(&tag, lockmode, false);
 }
 
 /*

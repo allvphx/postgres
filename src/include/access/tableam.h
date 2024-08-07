@@ -22,6 +22,7 @@
 #include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
+#include "xact.h"
 
 
 #define DEFAULT_TABLE_ACCESS_METHOD	"heap"
@@ -1750,5 +1751,8 @@ extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
 extern bool check_default_table_access_method(char **newval, void **extra,
 											  GucSource source);
+
+
+
 
 #endif							/* TABLEAM_H */
